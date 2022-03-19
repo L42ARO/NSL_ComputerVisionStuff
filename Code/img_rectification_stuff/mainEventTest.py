@@ -9,6 +9,9 @@ from kornia_moons.feature import *
 import time
 import imutils
 
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+print(device)
+
 def resize(scale,img):
     scale_percent = scale  # percent of original size
     width = int(img.shape[1] * scale_percent / 100)
@@ -24,6 +27,7 @@ def load_torch_image(fname,s, rot=0):
     img=resize(s,img)
     img = K.image_to_tensor(img, False).float() /255.
     img = K.color.bgr_to_rgb(img)
+    img=img.to(device)
     return img
 
 def iterRot(rotImgs=[],img2=None):
@@ -36,6 +40,7 @@ def iterRot(rotImgs=[],img2=None):
         tstImg = rotImgs[t]
         quadImg = img2#load_torch_image(img2Dir,30)
         matcher = KF.LoFTR(pretrained='outdoor')
+        matcher = matcher.eval().cuda()
         input_dict = {"image0": K.color.rgb_to_grayscale(tstImg), # LofTR works on grayscale images only 
                       "image1": K.color.rgb_to_grayscale(quadImg)}
         with torch.no_grad():
@@ -95,13 +100,14 @@ def subdivisions(img2Dir, scale=25):
         new_imgs.append(resize(scale,k))
         new_imgs[i]=K.image_to_tensor(new_imgs[i], False).float() /255.
         new_imgs[i]=K.color.bgr_to_rgb(new_imgs[i])
+        new_imgs[i]=new_imgs[i].to(device)
     return new_imgs
 
 start=time.time()
-fname1 = r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\3D_sim_tests\newLS_drone_3Drot_2_highQ.png'
+fname1 = r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\NewLSTemplates\newLS_drone_rot1_highQ.jpg'
 fname2= r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\NewLSTemplates\newLS_sat_highQ.png'
 vidImg=[load_torch_image(fname1,25,a*90) for a in range(4)]
-mapImg=subdivisions(fname2,25)
+mapImg=subdivisions(fname2,30)
 p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
 f=p_acr.index(max(p_acr))    
 f_img1 = vidImg[f-int(f/4)*4]
