@@ -130,41 +130,50 @@ def mid_points(x,y,z):
     xyt2 = [(1/filter1)*total3, (1/filter1)*total4]
     return [xyt, xyt2]
 
-start=time.time()
-fname1 = '../../Data/3D_sim_tests/newLS_drone_3Drot1_180_highQ.png'
-fname2= '../../Data/NewLSTemplates/newLS_sat_highQ.png'
-vidImg=[load_torch_image(fname1,30,a*90) for a in range(4)]
-mapImg=subdivisions(fname2,30)
-p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
-f=p_acr.index(max(p_acr))    
-f_img1 = vidImg[f-int(f/4)*4]
-f_img2 = mapImg[int(f/4)]
-f_inliers=np.array(p_inliers[f])
-f_mkpts0=np.array(p_mkpts[f][0])
-f_mkpts1=np.array(p_mkpts[f][1])
+def main(rocketImage, satImage, showResults=False, whatToShow="All"):
+    start=time.time()
+    fname1 = rocketImage
+    fname2= satImage
+    vidImg=[load_torch_image(fname1,30,a*90) for a in range(4)]
+    mapImg=subdivisions(fname2,30)
+    p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
+    f=p_acr.index(max(p_acr))    
+    f_img1 = vidImg[f-int(f/4)*4]
+    f_img2 = mapImg[int(f/4)]
+    f_inliers=np.array(p_inliers[f])
+    f_mkpts0=np.array(p_mkpts[f][0])
+    f_mkpts1=np.array(p_mkpts[f][1])
 
-print(f'The final countdown: {time.time()-start}')
+    print(f'The final countdown: {time.time()-start}')
 
-print(f'Winner: {f} --> Quadrant {int(f/4)+1}')
-print(len(f_mkpts1))
-print(len(f_inliers))
-print(p_acr)
-f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
-print(f_keypoints)
+    print(f'Winner: {f} --> Quadrant {int(f/4)+1}')
+    print(len(f_mkpts1))
+    print(len(f_inliers))
+    print(p_acr)
+    f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
+    #print(f_keypoints)
+    if (whatToShow=="Midpoint"):
+        f_mkpts0 = np.array([f_keypoints[0]])
+        f_mkpts1 =  np.array([f_keypoints[1]])
+        f_inliers =  np.array([True])
+    if(showResults):
+        draw_LAF_matches(
+            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts0).view(1,-1, 2),
+                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1, 1),
+                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1)),
 
-draw_LAF_matches(
-    KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts0).view(1,-1, 2),
-                                torch.ones(f_mkpts0.shape[0]).view(1,-1, 1, 1),
-                                torch.ones(f_mkpts0.shape[0]).view(1,-1, 1)),
-
-    KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts1).view(1,-1, 2),
-                                torch.ones(f_mkpts1.shape[0]).view(1,-1, 1, 1),
-                                torch.ones(f_mkpts1.shape[0]).view(1,-1, 1)),
-    torch.arange(f_mkpts0.shape[0]).view(-1,1).repeat(1,2),
-    K.tensor_to_image(f_img1),
-    K.tensor_to_image(f_img2),
-    f_inliers,
-    draw_dict={'inlier_color': (0.2, 1, 0.2),
-               'tentative_color': None, 
-               'feature_color': (0.2, 0.5, 1), 'vertical': False})
-plt.show()
+            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts1).view(1,-1, 2),
+                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1, 1),
+                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1)),
+            torch.arange(f_mkpts0.shape[0]).view(-1,1).repeat(1,2),
+            K.tensor_to_image(f_img1),
+            K.tensor_to_image(f_img2),
+            f_inliers,
+            draw_dict={'inlier_color': (0.2, 1, 0.2),
+                       'tentative_color': None, 
+                       'feature_color': (0.2, 0.5, 1), 'vertical': False})
+        plt.show()
+    return f_keypoints
+if __name__=="__main__":
+    coords=main('../../Data/3D_sim_tests/newLS_drone_3Drot1_180_highQ.png','../../Data/NewLSTemplates/newLS_sat_highQ.png', True, "Midpoint")
+    print(coords)
