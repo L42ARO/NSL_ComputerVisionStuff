@@ -10,6 +10,7 @@ import imutils
 import pydegensac
 
 device=''
+# OBJECT THAT HOLDS THE DATA TO RETURN ---------------------------------------------------------
 class f_refpoints:
     def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf):
         self.img_coords=imgCoords
@@ -21,11 +22,11 @@ class f_refpoints:
         self.percentFall=1
     def __str__(self):
         return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.2f}'
-
+# FUNCTION TO LOCALLY TEST THE MODULE ---------------------------------------------------------
 def __test():
     coords=getPoint(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\3D_sim_tests\newLS_drone_4.png',r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\NewLSTemplates\newLS_sat_highQ.png', True, "All")
     print(coords)
-
+# FUNCTION THAT GETS THE MIDPOINT AND KEYPOINTS OF THE IMAGE ---------------------------------------------------------
 def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
     global device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -73,7 +74,7 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
                        'feature_color': (0.2, 0.5, 1), 'vertical': False})
         plt.show()
     return final
-
+# FUNCTION THAT RESIZES THE IMAGAES ---------------------------------------------------------
 def resize(scale,img):
     scale_percent = scale  # percent of original size
     width = int(img.shape[1] * scale_percent / 100)
@@ -81,7 +82,7 @@ def resize(scale,img):
     dim = (width, height)
     resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
     return resized
-
+# FUNCTION THAT CONVERTS IMAGESS TO TORCH IMAGES ---------------------------------------------------------
 def load_torch_image(fname,s, rot):
     global device
     if (device==""):
@@ -96,7 +97,7 @@ def load_torch_image(fname,s, rot):
     img=img.to(device)
     print("loaded img")
     return img
-
+# FUNCTION THAT ROTATES THE IMAGE AND EVALUATES ---------------------------------------------------------
 def iterRot(rotImgs=[],img2=None):
     acc=[0,0,0,0]
     bett_acc=[0,0,0,0]
@@ -145,7 +146,7 @@ def iterRot(rotImgs=[],img2=None):
         if acc[t]>20:
             break     
     return bett_acc,true_mkpoints, true_inliers
-
+ # FUNCTION THAT ITERATES THROUGH THE MAP QUADRANTS AND EVALUATES ---------------------------------------------------------
 def quadIter(img1List=[], img2List=[]):
     prt_acr=[]
     prt_mkpts=[]
@@ -159,7 +160,7 @@ def quadIter(img1List=[], img2List=[]):
         prt_inliers+=n_inliers
         print(f'Time after time for Q{q+1}: {time.time()-start2}')
     return prt_acr, prt_mkpts, prt_inliers
-
+# FUNCTION THAT SUBDIVIDES THE MAP INTO THE QUADRANTS ---------------------------------------------------------
 def subdivisions(img2Dir, scale):
     global device
     if (device==""):
@@ -177,7 +178,7 @@ def subdivisions(img2Dir, scale):
         new_imgs[i]=K.color.bgr_to_rgb(new_imgs[i])
         new_imgs[i]=new_imgs[i].to(device)
     return new_imgs
-
+# FUNCTION THAT FINDS THE MIDPOINT GIVEN KEPOINTS ---------------------------------------------------------
 def mid_points(x,y,z):
     total = 0
     total2 = 0
