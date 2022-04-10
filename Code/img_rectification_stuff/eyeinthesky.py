@@ -1,15 +1,80 @@
-import pydegensac
 import matplotlib.pyplot as plt
 import cv2
-import kornia as K
 import kornia.feature as KF
+import kornia as K
 import numpy as np
 import torch
 from kornia_moons.feature import *
 import time
 import imutils
+import pydegensac
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device=''
+class f_refpoints:
+    def __init__(self, imgCoords,satCoords,Q, conf):
+        self.img_coords=imgCoords
+        self.sat_coords=satCoords
+        self.quadrant=Q
+        self.confidence=conf
+        self.percentFall=1
+    def __str__(self):
+        return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.2f}'
+
+def __test():
+    coords=getPoint(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\3D_sim_tests\newLS_drone_4.png',r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\NewLSTemplates\newLS_sat_highQ.png', True, "All")
+    print(coords)
+
+def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
+    global device
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(device)
+    start=time.time()
+    fname1 = rocketImage
+    fname2= satImage
+    vidImg=[load_torch_image(fname1,15,a*90) for a in range(4)]
+    mapImg=subdivisions(fname2,35)
+    p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
+    f=p_acr.index(max(p_acr))    
+    f_img1 = vidImg[f-int(f/4)*4]
+    f_img2 = mapImg[int(f/4)]
+    f_inliers=np.array(p_inliers[f])
+    f_mkpts0=np.array(p_mkpts[f][0])
+    f_mkpts1=np.array(p_mkpts[f][1])
+
+    print(f'The final countdown: {time.time()-start}')
+
+    print(f'Winner: {f} --> Quadrant {int(f/4)+1}')
+    print(len(f_mkpts1))
+    print(len(f_inliers))
+    print(type(int(f/4)+1))
+    f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
+    final=f_refpoints(f_keypoints[0],f_keypoints[1],int(f/4)+1,max(p_acr)) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    if (whatToShow=="Midpoint"):    
+        f_mkpts0 = np.array([f_keypoints[0]])
+        f_mkpts1 =  np.array([f_keypoints[1]])
+        f_inliers =  np.array([True])
+    if(showResults):
+        draw_LAF_matches(
+            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts0).view(1,-1, 2),
+                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1, 1),
+                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1)),
+
+            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts1).view(1,-1, 2),
+                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1, 1),
+                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1)),
+            torch.arange(f_mkpts0.shape[0]).view(-1,1).repeat(1,2),
+            K.tensor_to_image(f_img1),
+            K.tensor_to_image(f_img2),
+            f_inliers,
+            draw_dict={'inlier_color': (0.2, 1, 0.2),
+                       'tentative_color': None, 
+                       'feature_color': (0.2, 0.5, 1), 'vertical': False})
+        plt.show()
+    return final
+
+
+
+
 def resize(scale,img):
     scale_percent = scale  # percent of original size
     width = int(img.shape[1] * scale_percent / 100)
@@ -18,38 +83,48 @@ def resize(scale,img):
     resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
     return resized
 
-def load_torch_image(fname,s, rot=0):
+def load_torch_image(fname,s, rot):
+    global device
+    if (device==""):
+        device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     img= cv2.imread(fname)
     if rot!=0:
         img = imutils.rotate_bound(img, rot)
     img=resize(s,img)
+    print("img read & resized")
     img = K.image_to_tensor(img, False).float() /255.
     img = K.color.bgr_to_rgb(img)
     img=img.to(device)
+    print("loaded img")
     return img
 
 def iterRot(rotImgs=[],img2=None):
     acc=[0,0,0,0]
+    bett_acc=[0,0,0,0]
     true_inliers=[]
     true_mkpoints=[]
-    #rotImgs=rotImgs if rotImgs != [] else [load_torch_image(img1Dir,25,a*90) for a in range(4)]
     for t in range(4):
         print(f'{t*90} deg:',end=' ')
         tstImg = rotImgs[t]
-        quadImg = img2#load_torch_image(img2Dir,30)
+        quadImg = img2
         matcher = KF.LoFTR(pretrained='outdoor')
+        #MATCHING STARTS-------------------------------------------------------------------------------
         matcher = matcher.eval().cuda()
+        #if(device=='cuda:0'):
         input_dict = {"image0": K.color.rgb_to_grayscale(tstImg), # LofTR works on grayscale images only 
                       "image1": K.color.rgb_to_grayscale(quadImg)}
         with torch.no_grad():
             correspondences = matcher(input_dict)
+        #FILTER OUT RESULTS-----------------------------------------------------------------------------
         filtParams=[torch.count_nonzero(correspondences['confidence']>0.5),torch.mean(correspondences['confidence']),list(correspondences['confidence'].size())]
         print(f"TotPts: {filtParams[2]}; PtsWConf>0.5: {filtParams[0]}; avgConf: {filtParams[1]:.3f};", end=' ')        
-        if(filtParams[1]<0.35 or filtParams[2][0]<8):
+        if(filtParams[1]<0.37 or filtParams[2][0]<8):
             true_inliers.append([])
             true_mkpoints.append([])
+            acc[t]=0
             print()
             continue
+        #GETTING TRUE INLIERS--------------------------------------------------------------------------
         mkpts0 = correspondences['keypoints0'].cpu().numpy()
         mkpts1 = correspondences['keypoints1'].cpu().numpy()
         true_mkpoints.append([mkpts0, mkpts1])
@@ -59,19 +134,17 @@ def iterRot(rotImgs=[],img2=None):
         print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
         print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
         inliers_i= []
-        for i,k in enumerate(inliers1):
+        for i,k in enumerate(inliers1): #CROSS CHECKING BETWEEN USAC AND DEGENSAC
             if(k[0]==True and inliers2[i]==True):
                 inliers_i.append(True)
                 acc[t]+=1
             else:
                 inliers_i.append(False)
-        print(f'Acc match: {acc[t]};')
+        print(f'Acc match: {acc[t]};') #PRINTING RAW ACCURACY
         true_inliers.append(inliers_i)
+        bett_acc[t]=float(filtParams[1]*i)
         if acc[t]>20:
-            break
-    bett_acc=[]
-    for i in acc:
-        bett_acc.append(float(filtParams[1]*i))
+            break     
     return bett_acc,true_mkpoints, true_inliers
 
 def quadIter(img1List=[], img2List=[]):
@@ -81,15 +154,17 @@ def quadIter(img1List=[], img2List=[]):
     for q in range(4):
         print(f'QUADRANT {q+1}:')
         start2=time.time()
-        #fname2 = '../../Data/NewLSTemplates/newLS_sat_'+str(q)+'-4_highQ.png'#'rectified.jpg'
-        n_acr,n_mkpts,n_inliers=iterRot(img1List,mapImg[q])
+        n_acr,n_mkpts,n_inliers=iterRot(img1List,img2List[q])
         prt_acr.extend(n_acr)
         prt_mkpts+=n_mkpts
         prt_inliers+=n_inliers
         print(f'Time after time for Q{q+1}: {time.time()-start2}')
     return prt_acr, prt_mkpts, prt_inliers
 
-def subdivisions(img2Dir, scale=25):
+def subdivisions(img2Dir, scale):
+    global device
+    if (device==""):
+        device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     image = cv2.imread(img2Dir)
     (h, w) = image.shape[:2]
     # compute the center coordinate of the image
@@ -131,50 +206,6 @@ def mid_points(x,y,z):
     xyt2 = [(1/filter1)*total3, (1/filter1)*total4]
     return [xyt, xyt2]
 
-def main(rocketImage, satImage, showResults=False, whatToShow="All"):
-    start=time.time()
-    fname1 = rocketImage
-    fname2= satImage
-    vidImg=[load_torch_image(fname1,30,a*90) for a in range(4)]
-    mapImg=subdivisions(fname2,30)
-    p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
-    f=p_acr.index(max(p_acr))    
-    f_img1 = vidImg[f-int(f/4)*4]
-    f_img2 = mapImg[int(f/4)]
-    f_inliers=np.array(p_inliers[f])
-    f_mkpts0=np.array(p_mkpts[f][0])
-    f_mkpts1=np.array(p_mkpts[f][1])
 
-    print(f'The final countdown: {time.time()-start}')
-
-    print(f'Winner: {f} --> Quadrant {int(f/4)+1}')
-    print(len(f_mkpts1))
-    print(len(f_inliers))
-    print(p_acr)
-    f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    #print(f_keypoints)
-    if (whatToShow=="Midpoint"):
-        f_mkpts0 = np.array([f_keypoints[0]])
-        f_mkpts1 =  np.array([f_keypoints[1]])
-        f_inliers =  np.array([True])
-    if(showResults):
-        draw_LAF_matches(
-            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts0).view(1,-1, 2),
-                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1, 1),
-                                        torch.ones(f_mkpts0.shape[0]).view(1,-1, 1)),
-
-            KF.laf_from_center_scale_ori(torch.from_numpy(f_mkpts1).view(1,-1, 2),
-                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1, 1),
-                                        torch.ones(f_mkpts1.shape[0]).view(1,-1, 1)),
-            torch.arange(f_mkpts0.shape[0]).view(-1,1).repeat(1,2),
-            K.tensor_to_image(f_img1),
-            K.tensor_to_image(f_img2),
-            f_inliers,
-            draw_dict={'inlier_color': (0.2, 1, 0.2),
-                       'tentative_color': None, 
-                       'feature_color': (0.2, 0.5, 1), 'vertical': False})
-        plt.show()
-    return f_keypoints
 if __name__=="__main__":
-    coords=main('../../Data/3D_sim_tests/newLS_drone_3Drot1_180_highQ.png','../../Data/NewLSTemplates/newLS_sat_highQ.png', True, "Midpoint")
-    print(coords)
+    __test()
