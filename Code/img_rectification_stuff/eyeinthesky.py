@@ -11,9 +11,11 @@ import pydegensac
 
 device=''
 class f_refpoints:
-    def __init__(self, imgCoords,satCoords,Q, conf):
+    def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf):
         self.img_coords=imgCoords
         self.sat_coords=satCoords
+        self.imgkpts=imgkpts
+        self.satkpts=satkpts
         self.quadrant=Q
         self.confidence=conf
         self.percentFall=1
@@ -48,7 +50,7 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
     print(len(f_inliers))
     print(type(int(f/4)+1))
     f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    final=f_refpoints(f_keypoints[0],f_keypoints[1],int(f/4)+1,max(p_acr)) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    final=f_refpoints(f_keypoints[0],f_keypoints[1], f_mkpts0, f_mkpts1, int(f/4)+1,max(p_acr)) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
     if (whatToShow=="Midpoint"):    
         f_mkpts0 = np.array([f_keypoints[0]])
         f_mkpts1 =  np.array([f_keypoints[1]])
@@ -71,9 +73,6 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
                        'feature_color': (0.2, 0.5, 1), 'vertical': False})
         plt.show()
     return final
-
-
-
 
 def resize(scale,img):
     scale_percent = scale  # percent of original size
