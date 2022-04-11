@@ -8,18 +8,20 @@ from kornia_moons.feature import *
 import time
 import imutils
 import pydegensac
+from numba import jit
 
 device=''
 # OBJECT THAT HOLDS THE DATA TO RETURN ---------------------------------------------------------
 class f_refpoints:
-    def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf):
+    def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf, og):
         self.img_coords=imgCoords
         self.sat_coords=satCoords
-        self.imgkpts=imgkpts
-        self.satkpts=satkpts
+        self.img_kpts=imgkpts
+        self.sat_kpts=satkpts
         self.quadrant=Q
         self.confidence=conf
         self.percentFall=1
+        self.og_img=og
     def __str__(self):
         return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.2f}'
 # FUNCTION TO LOCALLY TEST THE MODULE ---------------------------------------------------------
@@ -28,13 +30,22 @@ def __test():
     print(coords)
 # FUNCTION THAT GETS THE MIDPOINT AND KEYPOINTS OF THE IMAGE ---------------------------------------------------------
 def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
+    with np.load(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\Calibration\CameraParams.npz') as f:
+        mtx0,dst0,rvecs0,tvecs0 = [f[i] for i in ('mtx','dist','rvecs','tvecs')]
     global device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    if(device==''):
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(device)
     start=time.time()
     fname1 = rocketImage
     fname2= satImage
-    vidImg=[load_torch_image(fname1,15,a*90) for a in range(4)]
+    vidImg=[]
+    ogImg=[]
+    loadedImg=resize(15,cv2.imread(fname1))
+    for a in range(4):
+        nImg,oImg=load_torch_image(loadedImg,a*90)
+        vidImg.append(nImg)
+        ogImg.append(oImg)
     mapImg=subdivisions(fname2,35)
     p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
     f=p_acr.index(max(p_acr))    
@@ -50,8 +61,8 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
     print(len(f_mkpts1))
     print(len(f_inliers))
     print(type(int(f/4)+1))
-    f_keypoints = mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    final=f_refpoints(f_keypoints[0],f_keypoints[1], f_mkpts0, f_mkpts1, int(f/4)+1,max(p_acr)) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    f_keypoints ,accImg_kpts, accSat_kpts= mid_points(f_mkpts0,f_mkpts1,f_inliers)
+    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, int(f/4)+1,max(p_acr),ogImg[f-int(f/4)*4]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
     if (whatToShow=="Midpoint"):    
         f_mkpts0 = np.array([f_keypoints[0]])
         f_mkpts1 =  np.array([f_keypoints[1]])
@@ -74,6 +85,13 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
                        'feature_color': (0.2, 0.5, 1), 'vertical': False})
         plt.show()
     return final
+def undistortImg(img,mtx,dist):
+    h,  w = img.shape[:2]
+    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w,h), 1, (w,h))
+    dst = cv2.undistort(img, mtx, dist, None, newcameramtx)
+    x, y, w, h = roi
+    dst = dst[y:y+h, x:x+w]
+    return dst
 # FUNCTION THAT RESIZES THE IMAGAES ---------------------------------------------------------
 def resize(scale,img):
     scale_percent = scale  # percent of original size
@@ -83,21 +101,21 @@ def resize(scale,img):
     resized = cv2.resize(img, dim, interpolation=cv2.INTER_AREA)
     return resized
 # FUNCTION THAT CONVERTS IMAGESS TO TORCH IMAGES ---------------------------------------------------------
-def load_torch_image(fname,s, rot):
+def load_torch_image(timg, rot):
     global device
     if (device==""):
         device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    img= cv2.imread(fname)
+    img= timg
     if rot!=0:
         img = imutils.rotate_bound(img, rot)
-    img=resize(s,img)
+    ogimg=img.copy()
     print("img read & resized")
     img = K.image_to_tensor(img, False).float() /255.
     img = K.color.bgr_to_rgb(img)
     img=img.to(device)
     print("loaded img")
-    return img
-# FUNCTION THAT ROTATES THE IMAGE AND EVALUATES ---------------------------------------------------------
+    return img,ogimg
+# FUNCTION THAT ROTATES THE IMAGE AND EVALUATES ---------------------------------------------------------\
 def iterRot(rotImgs=[],img2=None):
     acc=[0,0,0,0]
     bett_acc=[0,0,0,0]
@@ -142,7 +160,7 @@ def iterRot(rotImgs=[],img2=None):
                 inliers_i.append(False)
         print(f'Acc match: {acc[t]};') #PRINTING RAW ACCURACY
         true_inliers.append(inliers_i)
-        bett_acc[t]=float(filtParams[1]*i)
+        bett_acc[t]=float(filtParams[1]*acc[t])
         if acc[t]>20:
             break     
     return bett_acc,true_mkpoints, true_inliers
@@ -185,26 +203,32 @@ def mid_points(x,y,z):
     total3 = 0
     total4 = 0
     filter1 = 0
+    accImg_kpts=[]
+    accSat_kpts=[]
     for i in range(len(x)):
         if z[i]:
             s = x[i]
+            accImg_kpts.append(s)
             total = total + s[0]
     for k in range(len(x)):
         if z[k]:
             n = x[k]
+            accImg_kpts.append(n)
             total2 = total2 + n[1]
     for v in range(len(y)):
         if z[v]:
             v = y[v]
+            accSat_kpts.append(v)
             total3 = total3 + v[0]
     for j in range(len(y)):
         if z[j]:
             m = y[j]
+            accSat_kpts.append(m)
             total4 = total4 + m[1]
             filter1+=1
     xyt = [(1/filter1)*total, (1/filter1)*total2]
     xyt2 = [(1/filter1)*total3, (1/filter1)*total4]
-    return [xyt, xyt2]
+    return [xyt, xyt2], accImg_kpts, accSat_kpts
 
 
 if __name__=="__main__":
