@@ -11,7 +11,7 @@ import numpy as np
 import sys, os
 import cupy as cp
 def main():
-    for n in range(1):
+    for n in range(5):
         with np.load(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\Calibration\CameraParams.npz') as file:
             mtx0,dst0,rvecs0,tvecs0 = [file[i] for i in ('mtx','dist','rvecs','tvecs')]
         realWorldWidth=2532.35
@@ -43,10 +43,10 @@ def main():
             if(nonRelSat_kpts[-1][1]<initialpt[1]):
                 initialpt[1]=nonRelSat_kpts[-1][1]
         fimg.plot(initialpt[0], initialpt[1], 'go')
-        '''for i,s in enumerate(nonRelSat_kpts):
+        for i,s in enumerate(nonRelSat_kpts):
             nonRelSat_kpts[i][0]-=initialpt[0]
             nonRelSat_kpts[i][1]-=initialpt[1]
-            fimg.plot(nonRelSat_kpts[i][0], nonRelSat_kpts[i][1], 'bo')'''
+            fimg.plot(nonRelSat_kpts[i][0], nonRelSat_kpts[i][1], 'bo')
         realWorld_kpts=np.array(realWorld_kpts,dtype=np.float32)
         point.img_kpts=np.array(point.img_kpts,dtype=np.float32)
         nonRelSat_kpts=np.array(nonRelSat_kpts,dtype=np.float32)
@@ -68,12 +68,15 @@ def main():
             print(f'rvecs: {rvec}')
             print(f'tvecs: {tvec}')
         enablePrint()
+        h,  w = point.og_img.shape[:2]
+        newcameramtx, roi = cv.getOptimalNewCameraMatrix(mtx, dist, (w,h), 1, (w,h))
+
         H,state=cv.findHomography(point.img_kpts, nonRelSat_kpts)
         H = H.T
         h1 = H[0]
         h2 = H[1]
         h3 = H[2]
-        K_inv = np.linalg.inv(mtx)
+        K_inv = np.linalg.inv(newcameramtx)
         L = 1 / np.linalg.norm(np.dot(K_inv, h1))
         r1 = L * np.dot(K_inv, h1)
         r2 = L * np.dot(K_inv, h2)

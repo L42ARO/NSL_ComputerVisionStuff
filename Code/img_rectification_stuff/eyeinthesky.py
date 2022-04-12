@@ -8,7 +8,9 @@ from kornia_moons.feature import *
 import time
 import imutils
 import pydegensac
+from numba import njit
 from numba import jit
+import sys, os
 
 device=''
 # OBJECT THAT HOLDS THE DATA TO RETURN ---------------------------------------------------------
@@ -23,15 +25,21 @@ class f_refpoints:
         self.percentFall=1
         self.og_img=og
     def __str__(self):
-        return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.2f}'
+        return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.3f}'
 # FUNCTION TO LOCALLY TEST THE MODULE ---------------------------------------------------------
 def __test():
-    coords=getPoint(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\3D_sim_tests\newLS_drone_4.png',r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\NewLSTemplates\newLS_sat_highQ.png', True, "All")
+    if sys.platform=='linux':
+        file1='newLS_drone_4.png'
+        file2= 'newLS_sat_highQ.png'
+    else:
+        base=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        file1=base+'/Data/3D_sim_tests/newLS_drone_4.png'
+        file2=base+'/Data/NewLSTemplates/newLS_sat_highQ.png'
+    coords=getPoint(file1,file2, [1,2,3,4], True, "All")
     print(coords)
 # FUNCTION THAT GETS THE MIDPOINT AND KEYPOINTS OF THE IMAGE ---------------------------------------------------------
-def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
-    with np.load(r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\Calibration\CameraParams.npz') as f:
-        mtx0,dst0,rvecs0,tvecs0 = [f[i] for i in ('mtx','dist','rvecs','tvecs')]
+def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToShow="All"):
+    # blockPrint()
     global device
     if(device==''):
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -47,22 +55,28 @@ def getPoint(rocketImage, satImage, showResults=False, whatToShow="All"):
         vidImg.append(nImg)
         ogImg.append(oImg)
     mapImg=subdivisions(fname2,35)
-    p_acr, p_mkpts, p_inliers=quadIter(vidImg, mapImg)
-    f=p_acr.index(max(p_acr))    
-    f_img1 = vidImg[f-int(f/4)*4]
-    f_img2 = mapImg[int(f/4)]
-    f_inliers=np.array(p_inliers[f])
-    f_mkpts0=np.array(p_mkpts[f][0])
-    f_mkpts1=np.array(p_mkpts[f][1])
-
-    print(f'The final countdown: {time.time()-start}')
-
-    print(f'Winner: {f} --> Quadrant {int(f/4)+1}')
-    print(len(f_mkpts1))
-    print(len(f_inliers))
-    print(type(int(f/4)+1))
+    p_acr, p_mkpts=iterQuad(vidImg, mapImg,Qorder)
+    p_acr2=p_acr.copy()
+    for x in range(1):
+        f=p_acr.index(max(p_acr2))
+        f_q=Qorder[int(f/4)]
+        f_r=f-int(f/4)*4
+        print(f'Conf:{p_acr[f]} --> Quad:{f_q}')
+        f_img1 = vidImg[f_r]
+        f_img2 = mapImg[f_q-1]
+        f_mkpts0=np.array(p_mkpts[str(f_q)][f_r][0])
+        f_mkpts1=np.array(p_mkpts[str(f_q)][f_r][1])
+        f_inliers,mat=cleanMatches(f_mkpts0,f_mkpts1)
+        if(False): print('',end='')
+        else:
+            p_acr2.pop(f)
+    if(mat<4):
+        raise IndexError
+    # enablePrint()
+    print(f'Winner: {f} --> Quadrant {f_q}')
     f_keypoints ,accImg_kpts, accSat_kpts= mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, int(f/4)+1,max(p_acr),ogImg[f-int(f/4)*4]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, f_q,max(p_acr),ogImg[f-int(f/4)*4]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    print(f'The final countdown: {time.time()-start}')
     if (whatToShow=="Midpoint"):    
         f_mkpts0 = np.array([f_keypoints[0]])
         f_mkpts1 =  np.array([f_keypoints[1]])
@@ -104,7 +118,7 @@ def resize(scale,img):
 def load_torch_image(timg, rot):
     global device
     if (device==""):
-        device=torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+        device('cuda:0' if torch.cuda.is_available() else 'cpu')
     img= timg
     if rot!=0:
         img = imutils.rotate_bound(img, rot)
@@ -116,28 +130,27 @@ def load_torch_image(timg, rot):
     print("loaded img")
     return img,ogimg
 # FUNCTION THAT ROTATES THE IMAGE AND EVALUATES ---------------------------------------------------------\
+
 def iterRot(rotImgs=[],img2=None):
+    global device
     acc=[0,0,0,0]
-    bett_acc=[0,0,0,0]
-    true_inliers=[]
     true_mkpoints=[]
     for t in range(4):
-        print(f'{t*90} deg:',end=' ')
         tstImg = rotImgs[t]
         quadImg = img2
         matcher = KF.LoFTR(pretrained='outdoor')
         #MATCHING STARTS-------------------------------------------------------------------------------
-        matcher = matcher.eval().cuda()
-        #if(device=='cuda:0'):
+        if(str(device)=='cuda:0'):
+            matcher = matcher.eval().cuda()
         input_dict = {"image0": K.color.rgb_to_grayscale(tstImg), # LofTR works on grayscale images only 
                       "image1": K.color.rgb_to_grayscale(quadImg)}
         with torch.no_grad():
-            correspondences = matcher(input_dict)
+            correspondences = matcherFunc(matcher, input_dict)
         #FILTER OUT RESULTS-----------------------------------------------------------------------------
-        filtParams=[torch.count_nonzero(correspondences['confidence']>0.5),torch.mean(correspondences['confidence']),list(correspondences['confidence'].size())]
-        print(f"TotPts: {filtParams[2]}; PtsWConf>0.5: {filtParams[0]}; avgConf: {filtParams[1]:.3f};", end=' ')        
-        if(filtParams[1]<0.37 or filtParams[2][0]<8):
-            true_inliers.append([])
+        filtParams=[torch.count_nonzero(correspondences['confidence']>0.4),torch.mean(correspondences['confidence']),list(correspondences['confidence'].size())]
+        print('{} deg:'.format(t*90),end=' ')
+        print("TotPts: {}; PtsWConf>0.5: {}; avgConf: {:.3f};".format(filtParams[2],filtParams[0],filtParams[1]), end=' ')        
+        if(filtParams[1]<0.34 or filtParams[2][0]<8):
             true_mkpoints.append([])
             acc[t]=0
             print()
@@ -145,39 +158,50 @@ def iterRot(rotImgs=[],img2=None):
         #GETTING TRUE INLIERS--------------------------------------------------------------------------
         mkpts0 = correspondences['keypoints0'].cpu().numpy()
         mkpts1 = correspondences['keypoints1'].cpu().numpy()
-        true_mkpoints.append([mkpts0, mkpts1])
-        H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.9999, 100000)
-        inliers1 = inliers1 > 0
-        H2, inliers2 = pydegensac.findFundamentalMatrix(mkpts0, mkpts1, 0.4)
-        print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
-        print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
-        inliers_i= []
-        for i,k in enumerate(inliers1): #CROSS CHECKING BETWEEN USAC AND DEGENSAC
-            if(k[0]==True and inliers2[i]==True):
-                inliers_i.append(True)
-                acc[t]+=1
-            else:
-                inliers_i.append(False)
-        print(f'Acc match: {acc[t]};') #PRINTING RAW ACCURACY
-        true_inliers.append(inliers_i)
-        bett_acc[t]=float(filtParams[1]*acc[t])
-        if acc[t]>20:
-            break     
-    return bett_acc,true_mkpoints, true_inliers
+        true_mkpoints.append([mkpts0, mkpts1])   
+        acc[t]=float(filtParams[1]*filtParams[2][0])
+        print('Acc: {:.3f}'.format(acc[t]))
+        if(acc[t]>15):
+            break
+    return acc,true_mkpoints
+# @torch.jit.script
+def matcherFunc(mat, inDict):
+    return mat(inDict)
  # FUNCTION THAT ITERATES THROUGH THE MAP QUADRANTS AND EVALUATES ---------------------------------------------------------
-def quadIter(img1List=[], img2List=[]):
+def iterQuad(img1List=[], img2List=[], order=[1,2,3,4]):
     prt_acr=[]
-    prt_mkpts=[]
-    prt_inliers=[]
-    for q in range(4):
-        print(f'QUADRANT {q+1}:')
+    prt_mkpts={"1":[],"2":[],"3":[],"4":[]}
+    for q in order:
+        print(f'QUADRANT {q}:')
         start2=time.time()
-        n_acr,n_mkpts,n_inliers=iterRot(img1List,img2List[q])
+        n_acr,n_mkpts=iterRot(img1List,img2List[q-1])
         prt_acr.extend(n_acr)
-        prt_mkpts+=n_mkpts
-        prt_inliers+=n_inliers
-        print(f'Time after time for Q{q+1}: {time.time()-start2}')
-    return prt_acr, prt_mkpts, prt_inliers
+        prt_mkpts[str(q)]=n_mkpts
+        print(f'Time after time for Q{q}: {time.time()-start2}')
+    return prt_acr, prt_mkpts
+
+def cleanMatches(mkpts0,mkpts1):
+    matches=0
+    H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.9999, 100000)
+    # H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.9999, 100000)
+    inliers1 = inliers1 > 0
+    H2, inliers2 = pydegensac.findFundamentalMatrix(mkpts0, mkpts1, 0.4)
+    print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
+    print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
+    inliers_i,matches=crossCheck(inliers1,inliers2)
+    print(f'Acc match: {matches};') #PRINTING RAW ACCURACY
+    return inliers_i, matches
+@njit
+def crossCheck(i1,i2):
+    inliers_i=[]
+    matches=0
+    for i in range(len(i1)): #CROSS CHECKING BETWEEN USAC AND DEGENSAC
+        if(i1[i][0]==True and i2[i]==True):
+            inliers_i.append(True)
+            matches+=1
+        else:
+            inliers_i.append(False)
+    return np.array(inliers_i), matches
 # FUNCTION THAT SUBDIVIDES THE MAP INTO THE QUADRANTS ---------------------------------------------------------
 def subdivisions(img2Dir, scale):
     global device
@@ -197,6 +221,7 @@ def subdivisions(img2Dir, scale):
         new_imgs[i]=new_imgs[i].to(device)
     return new_imgs
 # FUNCTION THAT FINDS THE MIDPOINT GIVEN KEPOINTS ---------------------------------------------------------
+
 def mid_points(x,y,z):
     total = 0
     total2 = 0
@@ -213,23 +238,27 @@ def mid_points(x,y,z):
     for k in range(len(x)):
         if z[k]:
             n = x[k]
-            accImg_kpts.append(n)
             total2 = total2 + n[1]
     for v in range(len(y)):
         if z[v]:
-            v = y[v]
-            accSat_kpts.append(v)
-            total3 = total3 + v[0]
+            u = y[v]
+            accSat_kpts.append(u)
+            total3 = total3 + u[0]
     for j in range(len(y)):
         if z[j]:
             m = y[j]
-            accSat_kpts.append(m)
             total4 = total4 + m[1]
             filter1+=1
     xyt = [(1/filter1)*total, (1/filter1)*total2]
     xyt2 = [(1/filter1)*total3, (1/filter1)*total4]
     return [xyt, xyt2], accImg_kpts, accSat_kpts
 
+def blockPrint():
+    sys.stdout = open(os.devnull, 'w')
+
+# Restore
+def enablePrint():
+    sys.stdout = sys.__stdout__
 
 if __name__=="__main__":
     __test()
