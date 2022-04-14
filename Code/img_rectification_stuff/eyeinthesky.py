@@ -33,12 +33,12 @@ def __test():
         file2= 'newLS_sat_highQ.png'
     else:
         base=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        file1=base+'/Data/3D_sim_tests/newLS_drone_4.png'
-        file2=base+'/Data/NewLSTemplates/newLS_sat_highQ.png'
-    coords=getPoint(file1,file2, [1,2,3,4], True, "All")
+        file1=base+'/Data/3D_sim_tests/Falling_wStyle6/newLS_drone_anim7_0188.png'
+        file2=base+'/Data/NewLSTemplates/newLS_sat_4-4_highQ.png'
+    coords=getPoint(file1,file2, [1,2,3,4], True, "All", True)
     print(coords)
 # FUNCTION THAT GETS THE MIDPOINT AND KEYPOINTS OF THE IMAGE ---------------------------------------------------------
-def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToShow="All"):
+def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToShow="All", changeParams=False):
     # blockPrint()
     global device
     if(device==''):
@@ -51,31 +51,45 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
     ogImg=[]
     loadedImg=resize(15,cv2.imread(fname1))
     for a in range(4):
-        nImg,oImg=load_torch_image(loadedImg,a*90)
+        nImg,oImg=load_torch_image(loadedImg,a*85)
         vidImg.append(nImg)
         ogImg.append(oImg)
-    mapImg=subdivisions(fname2,35)
+    mapImg=subdivisions(fname2,25)
     p_acr, p_mkpts=iterQuad(vidImg, mapImg,Qorder)
+    max_acr=[max(p_acr)]
     p_acr2=p_acr.copy()
-    for x in range(1):
-        f=p_acr.index(max(p_acr2))
+    k_mkpts0=[]
+    k_mkpts1=[]
+    k_inliers=[]
+    mat=[]
+    for x in range(2 if changeParams else 1):
+        f=p_acr.index(max_acr[x])
         f_q=Qorder[int(f/4)]
         f_r=f-int(f/4)*4
         print(f'Conf:{p_acr[f]} --> Quad:{f_q}')
-        f_img1 = vidImg[f_r]
-        f_img2 = mapImg[f_q-1]
-        f_mkpts0=np.array(p_mkpts[str(f_q)][f_r][0])
-        f_mkpts1=np.array(p_mkpts[str(f_q)][f_r][1])
-        f_inliers,mat=cleanMatches(f_mkpts0,f_mkpts1)
-        if(False): print('',end='')
-        else:
-            p_acr2.pop(f)
-    if(mat<4):
-        raise IndexError
+        k_mkpts0.append(np.array(p_mkpts[str(f_q)][f_r][0]))
+        k_mkpts1.append(np.array(p_mkpts[str(f_q)][f_r][1]))
+        a_inliers,amat=cleanMatches(k_mkpts0[x],k_mkpts1[x])
+        k_inliers.append(a_inliers)
+        mat.append(amat)
+        p_acr2.remove(max_acr[x])
+        max_acr.append(max(p_acr2))
+        if not(amat<3 or (abs(max_acr[x]-max_acr[x+1])<2)):break
     # enablePrint()
+    idx=mat.index(max(mat))
+    if(max(mat)<2):
+        raise IndexError
+    f=p_acr.index(max_acr[idx])
+    f_q=Qorder[int(f/4)]
+    f_r=f-int(f/4)*4
+    f_img1 = vidImg[f_r]
+    f_img2 = mapImg[f_q-1]
+    f_mkpts0=k_mkpts0[idx]
+    f_mkpts1=k_mkpts1[idx]
+    f_inliers=k_inliers[idx]
     print(f'Winner: {f} --> Quadrant {f_q}')
     f_keypoints ,accImg_kpts, accSat_kpts= mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, f_q,max(p_acr),ogImg[f-int(f/4)*4]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, f_q,p_acr[f],ogImg[f_r]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
     print(f'The final countdown: {time.time()-start}')
     if (whatToShow=="Midpoint"):    
         f_mkpts0 = np.array([f_keypoints[0]])
@@ -99,6 +113,32 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
                        'feature_color': (0.2, 0.5, 1), 'vertical': False})
         plt.show()
     return final
+
+def cleanMatches(mkpts0,mkpts1):
+    matches=0
+    H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.45, 0.9999, 100000)
+    inliers1 = inliers1 > 0
+    H2, inliers2 = pydegensac.findFundamentalMatrix(mkpts0, mkpts1, 0.45)
+    H3, inliers3 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_DEFAULT, 0.45, 0.9999, 100000)
+    inliers3 = inliers3 > 0
+    print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
+    print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
+    print(f'USAC_ACCURATE match: {np.count_nonzero(inliers3 == True)}', end=' ')
+    inliers_i,matches=crossCheck(inliers1,inliers2,inliers3)
+    print(f'Acc match: {matches};') #PRINTING RAW ACCURACY
+    return inliers_i, matches
+@njit
+def crossCheck(i1,i2,i3):
+    inliers_i=[]
+    matches=0
+    for i in range(len(i1)): #CROSS CHECKING BETWEEN USAC AND DEGENSAC
+        if(i1[i][0]==True and i2[i]==True and i3[i]==True):
+            inliers_i.append(True)
+            matches+=1
+        else:
+            inliers_i.append(False)
+    return np.array(inliers_i), matches
+
 def undistortImg(img,mtx,dist):
     h,  w = img.shape[:2]
     newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w,h), 1, (w,h))
@@ -147,7 +187,7 @@ def iterRot(rotImgs=[],img2=None):
         with torch.no_grad():
             correspondences = matcherFunc(matcher, input_dict)
         #FILTER OUT RESULTS-----------------------------------------------------------------------------
-        filtParams=[torch.count_nonzero(correspondences['confidence']>0.4),torch.mean(correspondences['confidence']),list(correspondences['confidence'].size())]
+        filtParams=[torch.count_nonzero(correspondences['confidence']>0.6),torch.mean(correspondences['confidence']),list(correspondences['confidence'].size())]
         print('{} deg:'.format(t*90),end=' ')
         print("TotPts: {}; PtsWConf>0.5: {}; avgConf: {:.3f};".format(filtParams[2],filtParams[0],filtParams[1]), end=' ')        
         if(filtParams[1]<0.34 or filtParams[2][0]<8):
@@ -180,28 +220,6 @@ def iterQuad(img1List=[], img2List=[], order=[1,2,3,4]):
         print(f'Time after time for Q{q}: {time.time()-start2}')
     return prt_acr, prt_mkpts
 
-def cleanMatches(mkpts0,mkpts1):
-    matches=0
-    H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.9999, 100000)
-    # H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.5, 0.9999, 100000)
-    inliers1 = inliers1 > 0
-    H2, inliers2 = pydegensac.findFundamentalMatrix(mkpts0, mkpts1, 0.4)
-    print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
-    print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
-    inliers_i,matches=crossCheck(inliers1,inliers2)
-    print(f'Acc match: {matches};') #PRINTING RAW ACCURACY
-    return inliers_i, matches
-@njit
-def crossCheck(i1,i2):
-    inliers_i=[]
-    matches=0
-    for i in range(len(i1)): #CROSS CHECKING BETWEEN USAC AND DEGENSAC
-        if(i1[i][0]==True and i2[i]==True):
-            inliers_i.append(True)
-            matches+=1
-        else:
-            inliers_i.append(False)
-    return np.array(inliers_i), matches
 # FUNCTION THAT SUBDIVIDES THE MAP INTO THE QUADRANTS ---------------------------------------------------------
 def subdivisions(img2Dir, scale):
     global device
@@ -221,7 +239,7 @@ def subdivisions(img2Dir, scale):
         new_imgs[i]=new_imgs[i].to(device)
     return new_imgs
 # FUNCTION THAT FINDS THE MIDPOINT GIVEN KEPOINTS ---------------------------------------------------------
-
+@njit
 def mid_points(x,y,z):
     total = 0
     total2 = 0
