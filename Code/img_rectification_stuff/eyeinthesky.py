@@ -11,19 +11,20 @@ import pydegensac
 from numba import njit
 from numba import jit
 import sys, os
+import blur
 
 device=''
 # OBJECT THAT HOLDS THE DATA TO RETURN ---------------------------------------------------------
 class f_refpoints:
-    def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf, og):
+    def __init__(self, imgCoords,satCoords,imgkpts, satkpts, Q, conf, ogImg, ogMapImg):
         self.img_coords=imgCoords
         self.sat_coords=satCoords
         self.img_kpts=imgkpts
         self.sat_kpts=satkpts
         self.quadrant=Q
         self.confidence=conf
-        self.percentFall=1
-        self.og_img=og
+        self.og_img=ogImg
+        self.og_map=ogMapImg
     def __str__(self):
         return f'{self.img_coords[0]:>5.2f},{self.img_coords[1]:>5.2f} --> {self.sat_coords[0]:>5.2f},{self.sat_coords[1]:>5.2f} --> {self.quadrant} --> {self.confidence:>5.3f}'
 # FUNCTION TO LOCALLY TEST THE MODULE ---------------------------------------------------------
@@ -33,13 +34,20 @@ def __test():
         file2= 'newLS_sat_highQ.png'
     else:
         base=os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        file1=base+'/Data/3D_sim_tests/Falling_wStyle6/newLS_drone_anim7_0188.png'
-        file2=base+'/Data/NewLSTemplates/newLS_sat_4-4_highQ.png'
+        file1=base+'/Data/3D_sim_tests/Falling_wStyle8/newLS_drone_anim_0250.png'
+        file2=base+'/Data/NewLSTemplates/newLS_sat2_HighQ.png'
     coords=getPoint(file1,file2, [1,2,3,4], True, "All", True)
+    print(blur.Blur(file1))
     print(coords)
 # FUNCTION THAT GETS THE MIDPOINT AND KEYPOINTS OF THE IMAGE ---------------------------------------------------------
-def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToShow="All", changeParams=False):
+def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToShow="All", changeParams=True):
     # blockPrint()
+    if sys.platform=='linux':
+        file3='CameraParams.npz'
+    else:
+        file3=r'C:\Users\L42ARO\Documents\USF\SOAR\NSL_ComputerVisionStuff\Data\Calibration\CameraParams.npz'
+    with np.load(file3) as file:
+            mtx0,dst0,rvecs0,tvecs0 = [file[i] for i in ('mtx','dist','rvecs','tvecs')]
     global device
     if(device==''):
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -49,12 +57,12 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
     fname2= satImage
     vidImg=[]
     ogImg=[]
-    loadedImg=resize(15,cv2.imread(fname1))
+    loadedImg=resize(15,undistortImg(cv2.imread(fname1),mtx0,dst0))
     for a in range(4):
         nImg,oImg=load_torch_image(loadedImg,a*85)
         vidImg.append(nImg)
         ogImg.append(oImg)
-    mapImg=subdivisions(fname2,25)
+    mapImg, ogMapImg=subdivisions(fname2,25)
     p_acr, p_mkpts=iterQuad(vidImg, mapImg,Qorder)
     max_acr=[max(p_acr)]
     p_acr2=p_acr.copy()
@@ -62,19 +70,32 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
     k_mkpts1=[]
     k_inliers=[]
     mat=[]
-    for x in range(2 if changeParams else 1):
-        f=p_acr.index(max_acr[x])
+    f=p_acr.index(max_acr[0])
+    f_q=Qorder[int(f/4)]
+    f_r=f-int(f/4)*4
+    for x in range(3 if changeParams else 1):
+        '''f=p_acr.index(max_acr[x])
         f_q=Qorder[int(f/4)]
-        f_r=f-int(f/4)*4
+        f_r=f-int(f/4)*4'''
         print(f'Conf:{p_acr[f]} --> Quad:{f_q}')
         k_mkpts0.append(np.array(p_mkpts[str(f_q)][f_r][0]))
         k_mkpts1.append(np.array(p_mkpts[str(f_q)][f_r][1]))
         a_inliers,amat=cleanMatches(k_mkpts0[x],k_mkpts1[x])
         k_inliers.append(a_inliers)
         mat.append(amat)
-        p_acr2.remove(max_acr[x])
-        max_acr.append(max(p_acr2))
-        if not(amat<3 or (abs(max_acr[x]-max_acr[x+1])<2)):break
+        prevQ=f_q
+        max1=max_acr[-1]
+        while (f_q==prevQ):
+            if(len(p_acr2)<2):
+                break
+            p_acr2.remove(max1)
+            max1=max(p_acr2)
+            f=p_acr2.index(max1)
+            f_q=Qorder[int(f/4)]
+        f_r=f-int(f/4)*4
+        max_acr.append(max1)
+        print(f'max2:{max_acr[-1]}')
+        # if not(amat<3 or (abs(max_acr[x]-max_acr[x+1])<2)):break
     # enablePrint()
     idx=mat.index(max(mat))
     if(max(mat)<2):
@@ -89,7 +110,7 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
     f_inliers=k_inliers[idx]
     print(f'Winner: {f} --> Quadrant {f_q}')
     f_keypoints ,accImg_kpts, accSat_kpts= mid_points(f_mkpts0,f_mkpts1,f_inliers)
-    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, f_q,p_acr[f],ogImg[f_r]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
+    final=f_refpoints(f_keypoints[0],f_keypoints[1], accImg_kpts,accSat_kpts, f_q,p_acr[f],ogImg[f_r],ogMapImg[f_r]) #WE CREATE AN OBJECT THAT HOLDS THE DATA TO RETURN
     print(f'The final countdown: {time.time()-start}')
     if (whatToShow=="Midpoint"):    
         f_mkpts0 = np.array([f_keypoints[0]])
@@ -116,14 +137,14 @@ def getPoint(rocketImage, satImage, Qorder=[1,2,3,4], showResults=False, whatToS
 
 def cleanMatches(mkpts0,mkpts1):
     matches=0
-    H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.45, 0.9999, 100000)
+    H1, inliers1 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_MAGSAC, 0.45, 0.9999, 10000)
     inliers1 = inliers1 > 0
     H2, inliers2 = pydegensac.findFundamentalMatrix(mkpts0, mkpts1, 0.45)
-    H3, inliers3 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_DEFAULT, 0.45, 0.9999, 100000)
+    H3, inliers3 = cv2.findFundamentalMat(mkpts0, mkpts1, cv2.USAC_DEFAULT, 0.45, 0.9999, 10000)
     inliers3 = inliers3 > 0
     print(f'USAC match: {np.count_nonzero(inliers1 == True)};', end=' ')
     print(f'DEGENSAC match: {np.count_nonzero(inliers2 == True)};', end=' ')
-    print(f'USAC_ACCURATE match: {np.count_nonzero(inliers3 == True)}', end=' ')
+    # print(f'USAC_ACCURATE match: {np.count_nonzero(inliers3 == True)}', end=' ')
     inliers_i,matches=crossCheck(inliers1,inliers2,inliers3)
     print(f'Acc match: {matches};') #PRINTING RAW ACCURACY
     return inliers_i, matches
@@ -231,15 +252,17 @@ def subdivisions(img2Dir, scale):
     (cX, cY) = (w // 2, h // 2)
     #cv2.imshow('Original', image)
     imgs=[image[0:cY, 0:cX],image[0:cY, cX:w],image[cY:h, 0:cX],image[cY:h, cX:w]]
+    ogImgs=[]
     new_imgs=[]
     for i,k in enumerate(imgs):
         new_imgs.append(resize(scale,k))
+        ogImgs.append(resize(scale,k))
         new_imgs[i]=K.image_to_tensor(new_imgs[i], False).float() /255.
         new_imgs[i]=K.color.bgr_to_rgb(new_imgs[i])
         new_imgs[i]=new_imgs[i].to(device)
-    return new_imgs
+    return new_imgs, ogImgs
 # FUNCTION THAT FINDS THE MIDPOINT GIVEN KEPOINTS ---------------------------------------------------------
-@njit
+# @njit
 def mid_points(x,y,z):
     total = 0
     total2 = 0
