@@ -10,5 +10,6 @@ The code inside sherlock.py contains the main program that's called once the Jet
 Sherlock.py relies on the eyeinthesky.py which holds the core algorithm behind the project. We use image matching between the images the rocket captured on the descent and actual satellite footage of our launching zone, by comparing the two we are able to obtain an estaimate of where our rocket was going to land. The comparison is done via an ML algorithm LOFTR that we are able to use with the help of the Kornia library and OpenCV. Even though LOFTR isn't very accurate a great heights, what we do is we split the satellite imagery into 4 quadrants and make LOFTR iterate over each quadrant until it finds the best matching one. For the algorithm to run as fast as possible we use the NVIDIA Jetson's GPU, that's why we use CUDA in the program.
 The final estimate processed by Sherlock is compared with the functions inside thegrid.py to output which is the most probable quadrant we landed on.
 
+<h2> Setup the code </h2>
 To access the code setup more easily try forking the Gradient Notebook which uses a cloud GPU to avoid crashing your own computer: 
 https://console.paperspace.com/tek5fvbsq/notebook/rikn565w9orvmqp?file=Tutorial%20Docs%2FHow_To_Use.ipynb
